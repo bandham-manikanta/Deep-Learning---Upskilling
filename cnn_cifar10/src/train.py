@@ -2,15 +2,21 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
+import time
 
-def train_one_epoch(model, train_loader, criterion, optimizer, device):
-    """Train for one epoch"""
+def train_one_epoch(model, train_loader, criterion, optimizer, device, epoch):
+    """Train for one epoch with detailed metrics"""
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
+    batch_times = []
     
-    for batch_idx, (data, target) in enumerate(tqdm(train_loader, desc="Training")):
+    epoch_start = time.time()
+    
+    for batch_idx, (data, target) in enumerate(tqdm(train_loader, desc=f"Training Epoch {epoch}")):
+        batch_start = time.time()
+        
         data, target = data.to(device), target.to(device)
         
         optimizer.zero_grad()
@@ -19,27 +25,45 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device):
         loss.backward()
         optimizer.step()
         
+        batch_time = time.time() - batch_start
+        batch_times.append(batch_time)
+        
         running_loss += loss.item()
         _, predicted = torch.max(output, 1)
         total += target.size(0)
         correct += (predicted == target).sum().item()
     
+    epoch_time = time.time() - epoch_start
     epoch_loss = running_loss / len(train_loader)
     epoch_acc = 100 * correct / total
-    return epoch_loss, epoch_acc
+    avg_batch_time = sum(batch_times) / len(batch_times)
+    
+    return {
+        'loss': epoch_loss,
+        'accuracy': epoch_acc,
+        'epoch_time': epoch_time,
+        'avg_batch_time': avg_batch_time,
+        'total_samples': total
+    }
 
 def validate(model, val_loader, criterion, device):
-    """Validate the model"""
+    """Validate with detailed metrics"""
     model.eval()
     val_loss = 0.0
     correct = 0
     total = 0
+    inference_times = []
     
     with torch.no_grad():
         for data, target in tqdm(val_loader, desc="Validating"):
+            start_time = time.time()
+            
             data, target = data.to(device), target.to(device)
             output = model(data)
             val_loss += criterion(output, target).item()
+            
+            inference_time = time.time() - start_time
+            inference_times.append(inference_time)
             
             _, predicted = torch.max(output, 1)
             total += target.size(0)
@@ -47,40 +71,28 @@ def validate(model, val_loader, criterion, device):
     
     val_loss /= len(val_loader)
     val_acc = 100 * correct / total
-    return val_loss, val_acc
+    avg_inference_time = sum(inference_times) / len(inference_times)
+    
+    return {
+        'loss': val_loss,
+        'accuracy': val_acc,
+        'avg_inference_time': avg_inference_time,
+        'total_samples': total
+    }
 
-def log_sample_predictions(model, val_loader, device, num_samples=8):
-    """Log some sample predictions to wandb"""
-    model.eval()
-    images, labels = next(iter(val_loader))
-    images, labels = images[:num_samples], labels[:num_samples]
-    
-    with torch.no_grad():
-        images = images.to(device)
-        outputs = model(images)
-        _, predictions = torch.max(outputs, 1)
-    
-    # CIFAR-10 classes
-    classes = ['plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-    
-    # Denormalize images for display
-    mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(3, 1, 1)
-    std = torch.tensor([0.2023, 0.1994, 0.2010]).view(3, 1, 1)
-    
-    wandb_images = []
-    for i in range(num_samples):
-        # Denormalize image
-        img = images[i].cpu()
-        img = img * std + mean
-        img = torch.clamp(img, 0, 1)
-        img = img.permute(1, 2, 0).numpy()  # CHW to HWC
-        
-        true_label = classes[labels[i].item()]
-        pred_label = classes[predictions[i].item()]
-        
-        wandb_images.append(wandb.Image(
-            img, 
-            caption=f"True: {true_label}, Pred: {pred_label}"
-        ))
-    
-    wandb.log({"sample_predictions": wandb_images})
+def count_parameters(model):
+    """Count total and trainable parameters"""
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
+
+def calculate_flops(model, input_size=(1, 3, 224, 224)):
+    """Estimate FLOPs (simplified)"""
+    try:
+        from torchprofile import profile_macs
+        inputs = torch.randn(input_size)
+        macs = profile_macs(model, inputs)
+        return macs / 1e9  # Convert to GFLOPs
+    except ImportError:
+        return "Install torchprofile for FLOP calculation"
+

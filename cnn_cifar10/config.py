@@ -3,7 +3,7 @@ import torch
 # Hyperparameters
 LEARNING_RATE = 0.001
 BATCH_SIZE = 64
-EPOCHS = 50
+EPOCHS = 100
 MOMENTUM = 0.9
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 

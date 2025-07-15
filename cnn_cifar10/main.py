@@ -1,10 +1,12 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # Use only GPU 0
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import wandb
-import os
 
-from src.model import BasicCNN, EnhancedCNN
+from src.model import VGG_CIFAR10
 from src.train import train_one_epoch, validate, log_sample_predictions
 from src.utils import get_cifar10_loaders, count_parameters
 from config import *
@@ -22,13 +24,14 @@ def main():
             "batch_size": BATCH_SIZE,
             "epochs": EPOCHS,
             "momentum": MOMENTUM,
-            "architecture": "BasicCNN",
-            "device": str(device)
+            "architecture": "VGG_CIFAR10",
+            "device": str(device),
+            "early_stopping_patience": 15
         }
     )
     
     # Create model
-    model = EnhancedCNN().to(device)
+    model = VGG_CIFAR10().to(device)
     total_params, trainable_params = count_parameters(model)
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
@@ -47,10 +50,18 @@ def main():
     
     # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+    optimizer = optim.SGD(
+        model.parameters(), 
+        lr=LEARNING_RATE, 
+        momentum=MOMENTUM,
+        weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.5)
     
     # Training loop
     best_val_acc = 0.0
+    patience = 15
+    patience_counter = 0
+    min_epochs = 10
     
     for epoch in range(EPOCHS):
         print(f"\nEpoch {epoch+1}/{EPOCHS}")
@@ -61,6 +72,10 @@ def main():
         
         # Validate
         val_loss, val_acc = validate(model, val_loader, criterion, device)
+
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Learning Rate: {current_lr:.6f}")  # Show current LR
         
         # Print results
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
@@ -73,7 +88,7 @@ def main():
             "train_accuracy": train_acc,
             "val_loss": val_loss,
             "val_accuracy": val_acc,
-            "learning_rate": optimizer.param_groups[0]['lr']
+            "learning_rate": current_lr
         })
         
         # Log sample predictions every 5 epochs
@@ -83,9 +98,18 @@ def main():
         # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
+            patience_counter = 0
             os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
             torch.save(model.state_dict(), f"{MODEL_SAVE_PATH}/best_basic_cnn.pth")
             print(f"New best model saved! Val Acc: {val_acc:.2f}%")
+        else:
+            patience_counter += 1
+            print(f"⏰ No improvement for {patience_counter} epochs")
+
+            if epoch >= min_epochs and patience_counter >= patience:
+                print(f"\n🛑 EARLY STOPPING at epoch {epoch + 1}")
+                print(f"Best validation accuracy: {best_val_acc:.2f}%")
+                break
     
     print(f"\nTraining completed! Best validation accuracy: {best_val_acc:.2f}%")
     wandb.finish()
